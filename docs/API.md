@@ -1255,7 +1255,7 @@ controle de acesso.
 
 | Método | Rota | Descrição | Autenticação |
 |---|---|---|---|
-| GET | `/api/notifications` | Listar notificações (`?context=SOCIAL\|PROFESSIONAL`) | Sim |
+| GET | `/api/notifications` | Listar notificações (`?context=SOCIAL\|PROFESSIONAL`, `?unread=true`) | Sim |
 | POST | `/api/notifications/{notificationId}/read` | Marcar como lida | Sim |
 | POST | `/api/notifications/read-all` | Marcar todas como lidas | Sim |
 | GET | `/api/notifications/unread-summary` | Unread count per area for menu indicators (`?context=SOCIAL\|PROFESSIONAL`) | Sim |
@@ -1288,6 +1288,13 @@ O aviso tem `context: "SOCIAL"`, `module: "COMMUNITY_PROJECTS"` e `href: "/proje
 Each item of `GET /api/notifications` carries `module`, the interface area of its kind (same
 `NotificationModule` names as below, e.g. `EVENTS`, `OTHER`), so the app hides or flags notifications
 by area without guessing from the kind.
+
+Com `unread=true`, `GET /api/notifications` devolve só os avisos não lidos, de todos os tipos
+(inclusive `NEW_MESSAGE`, `NEW_WORK_MESSAGE` e `CONNECTION_REQUEST`), mais novos primeiro. O filtro
+combina com `context`, `cursor` e `limit`, e os avisos de quem está bloqueado continuam fora. O
+`nextCursor` não carrega o filtro: a página seguinte precisa repetir `unread=true`. Sem o parâmetro,
+ou com `unread=false`, a lista é a de sempre, com lidos e não lidos; valor que não é booleano
+responde 400 `BAD_REQUEST`.
 
 Each item also carries `place` and `eventDate`, resolved at read time from its `href` (one query per
 kind of target for the whole page):

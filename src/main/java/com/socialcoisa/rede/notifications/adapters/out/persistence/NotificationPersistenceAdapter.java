@@ -32,8 +32,9 @@ class NotificationPersistenceAdapter implements NotificationRepository {
 
 	@Override
 	public List<Notification> findByUserId(String userId, java.time.Instant before, NotificationContext context,
-			int limit) {
-		return springData.findByUserId(userId, before, context == null ? null : context.name(), PageRequest.of(0, limit))
+			boolean unread, int limit) {
+		return springData.findByUserId(userId, before, context == null ? null : context.name(), unread,
+				PageRequest.of(0, limit))
 			.stream()
 			.map(NotificationJpaEntity::toDomain)
 			.toList();

@@ -178,7 +178,13 @@ public class NotificationService {
 	/** Notifications of one interface (plus the account-wide ones); a null context keeps all. */
 	public List<Notification> list(String userId, java.time.Instant before,
 			com.socialcoisa.rede.notifications.domain.NotificationContext context, int limit) {
-		return repository.findByUserId(userId, before, context, limit);
+		return list(userId, before, context, false, limit);
+	}
+
+	/** Like the list above; {@code unread} keeps only the unread ones, of every kind. */
+	public List<Notification> list(String userId, java.time.Instant before,
+			com.socialcoisa.rede.notifications.domain.NotificationContext context, boolean unread, int limit) {
+		return repository.findByUserId(userId, before, context, unread, limit);
 	}
 
 	/**

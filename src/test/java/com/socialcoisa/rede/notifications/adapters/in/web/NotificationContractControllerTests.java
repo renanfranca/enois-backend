@@ -10,6 +10,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +19,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
+
+import com.jayway.jsonpath.JsonPath;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -36,6 +39,9 @@ class NotificationContractControllerTests {
 
 	@Autowired
 	private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+	/** Instante fixo dos avisos que precisam de ordem e cursor verificáveis. */
+	private static final Instant AT = Instant.parse("2026-01-10T12:00:00Z");
 
 	private TestAuthHelper auth;
 
@@ -161,6 +167,123 @@ class NotificationContractControllerTests {
 			.andExpect(status().isOk())
 			.andExpect(jsonPath("$.items[?(@.id == 'module_event')].module").value("EVENTS"))
 			.andExpect(jsonPath("$.items[?(@.id == 'module_reaction')].module").value("OTHER"));
+	}
+
+	@Test
+	void unreadOnlyListsEveryUnreadKindNewestFirstAndTheDefaultListStaysTheSame() throws Exception {
+		var session = auth.authenticate("notif_unread_kinds");
+		String me = session.userId();
+		notice(me, "unread_kinds_system", "SISTEMA", "sistema", true, AT.plusSeconds(60));
+		notice(me, "unread_kinds_message", "NEW_MESSAGE", "notif_unread_friend", false, AT.plusSeconds(50));
+		notice(me, "unread_kinds_group", "GROUP_NEW_POST", "notif_unread_friend", true, AT.plusSeconds(40));
+		notice(me, "unread_kinds_request", "CONNECTION_REQUEST", "notif_unread_friend", false, AT.plusSeconds(30));
+		notice(me, "unread_kinds_reaction", "NEW_REACTION", "notif_unread_friend", false, AT.plusSeconds(20));
+
+		String unreadOnly = list(session.token(), "unread", "true");
+		String withoutFilter = list(session.token());
+		String explicitlyUnfiltered = list(session.token(), "unread", "false");
+
+		assertThat(ids(unreadOnly)).containsExactly("unread_kinds_message", "unread_kinds_request",
+				"unread_kinds_reaction");
+		assertThat(JsonPath.<List<Boolean>>read(unreadOnly, "$.items[*].read")).containsOnly(false);
+		assertThat(ids(withoutFilter)).containsExactly("unread_kinds_system", "unread_kinds_message",
+				"unread_kinds_group", "unread_kinds_request", "unread_kinds_reaction");
+		assertThat(ids(explicitlyUnfiltered)).isEqualTo(ids(withoutFilter));
+	}
+
+	@Test
+	void unreadOnlyLeavesOutBlockedActors() throws Exception {
+		var session = auth.authenticate("notif_unread_blocker");
+		var blocked = auth.authenticate("notif_unread_blocked_actor");
+		String me = session.userId();
+		notice(me, "blocking_unread_from_blocked_actor", "NEW_REACTION", blocked.userId(), false, AT.plusSeconds(30));
+		notice(me, "blocking_read_from_friend", "NEW_REACTION", "notif_unread_friend", true, AT.plusSeconds(20));
+		notice(me, "blocking_unread_from_friend", "NEW_REACTION", "notif_unread_friend", false, AT.plusSeconds(10));
+		mockMvc.perform(post("/network/blocks/" + blocked.userId())
+				.header("X-Session-Token", session.token())
+				.header("Idempotency-Key", "notif-unread-blocker-block"))
+			.andExpect(status().isCreated());
+
+		String unreadOnly = list(session.token(), "unread", "true");
+
+		assertThat(ids(unreadOnly)).containsExactly("blocking_unread_from_friend");
+	}
+
+	/**
+	 * O sino conta a não lida pelo resumo, mas ela ficava na página 2 da lista atrás de dez avisos
+	 * lidos mais novos (enois-frontend#1147). Com o filtro, ela vem na primeira página.
+	 */
+	@Test
+	void unreadOnlyBringsAnOldUnreadNoticeHiddenBehindTenNewerReadOnes() throws Exception {
+		var session = auth.authenticate("notif_unread_buried");
+		String me = session.userId();
+		notice(me, "unread_buried_reaction", "NEW_REACTION", "notif_unread_friend", false, AT);
+		for (int index = 1; index <= 10; index++) {
+			notice(me, "unread_buried_read_" + index, index % 2 == 0 ? "NEW_MESSAGE" : "NEW_REACTION",
+				"notif_unread_friend", true, AT.plusSeconds(index));
+		}
+
+		String defaultPage = list(session.token(), "limit", "10");
+		String unreadPage = list(session.token(), "unread", "true", "limit", "10");
+		String summary = mockMvc.perform(get("/notifications/unread-summary")
+				.header("X-Session-Token", session.token()))
+			.andExpect(status().isOk())
+			.andReturn()
+			.getResponse()
+			.getContentAsString();
+
+		assertThat(ids(defaultPage)).hasSize(10).doesNotContain("unread_buried_reaction");
+		assertThat(ids(unreadPage)).containsExactly("unread_buried_reaction");
+		assertThat((Integer) JsonPath.read(summary, "$.total")).isEqualTo(1);
+	}
+
+	@Test
+	void unreadOnlyPagesThroughTheUnreadNoticesWithTheCursor() throws Exception {
+		var session = auth.authenticate("notif_unread_pages");
+		String me = session.userId();
+		notice(me, "unread_pages_read_1", "NEW_REACTION", "notif_unread_friend", true, AT.plusSeconds(70));
+		notice(me, "unread_pages_a", "NEW_REACTION", "notif_unread_friend", false, AT.plusSeconds(60));
+		notice(me, "unread_pages_read_2", "NEW_REACTION", "notif_unread_friend", true, AT.plusSeconds(50));
+		notice(me, "unread_pages_b", "NEW_REACTION", "notif_unread_friend", false, AT.plusSeconds(40));
+		notice(me, "unread_pages_read_3", "NEW_REACTION", "notif_unread_friend", true, AT.plusSeconds(30));
+		notice(me, "unread_pages_c", "NEW_REACTION", "notif_unread_friend", false, AT.plusSeconds(20));
+		notice(me, "unread_pages_read_4", "NEW_REACTION", "notif_unread_friend", true, AT.plusSeconds(10));
+
+		String first = list(session.token(), "unread", "true", "limit", "2");
+		String cursor = JsonPath.read(first, "$.nextCursor");
+		String second = list(session.token(), "unread", "true", "limit", "2", "cursor", cursor);
+
+		assertThat(ids(first)).containsExactly("unread_pages_a", "unread_pages_b");
+		assertThat(cursor).isNotBlank();
+		assertThat(ids(second)).containsExactly("unread_pages_c");
+		assertThat((String) JsonPath.read(second, "$.nextCursor")).isNull();
+	}
+
+	@Test
+	void unreadOnlyCombinesWithTheContext() throws Exception {
+		var session = auth.authenticate("notif_unread_context");
+		String me = session.userId();
+		notice(me, "unread_context_work", "NEW_WORK_MESSAGE", "notif_unread_friend", false, AT.plusSeconds(30));
+		notice(me, "unread_context_security", "SEGURANCA", "sistema", false, AT.plusSeconds(20));
+		notice(me, "unread_context_group", "GROUP_NEW_POST", "notif_unread_friend", false, AT.plusSeconds(10));
+		notice(me, "unread_context_read_work", "NEW_WORK_MESSAGE", "notif_unread_friend", true, AT.plusSeconds(5));
+		notice(me, "unread_context_read_group", "GROUP_NEW_POST", "notif_unread_friend", true, AT);
+
+		String professional = list(session.token(), "unread", "true", "context", "PROFESSIONAL");
+		String social = list(session.token(), "unread", "true", "context", "SOCIAL");
+
+		assertThat(ids(professional)).containsExactly("unread_context_work", "unread_context_security");
+		assertThat(ids(social)).containsExactly("unread_context_security", "unread_context_group");
+	}
+
+	@Test
+	void refusesAnUnreadFilterThatIsNotABoolean() throws Exception {
+		var session = auth.authenticate("notif_unread_invalid");
+
+		mockMvc.perform(get("/notifications").param("unread", "talvez")
+				.header("X-Session-Token", session.token()))
+			.andExpect(status().isBadRequest())
+			.andExpect(jsonPath("$.code").value("BAD_REQUEST"));
 	}
 
 	@Test
@@ -294,6 +417,29 @@ class NotificationContractControllerTests {
 				insert into notifications (id, user_id, kind, actor_id, title, body, href, is_read, created_at)
 				values (?, ?, ?, ?, 'Aviso', 'corpo', ?, ?, current_timestamp)
 				""", id, userId, kind, actorId, href, read);
+	}
+
+	private void notice(String userId, String id, String kind, String actorId, boolean read, Instant createdAt) {
+		jdbc.update("""
+				insert into notifications (id, user_id, kind, actor_id, title, body, is_read, created_at)
+				values (?, ?, ?, ?, 'Aviso', 'corpo', ?, ?)
+				""", id, userId, kind, actorId, read, Timestamp.from(createdAt));
+	}
+
+	private String list(String token, String... params) throws Exception {
+		var request = get("/notifications").header("X-Session-Token", token);
+		for (int index = 0; index < params.length; index += 2) {
+			request.param(params[index], params[index + 1]);
+		}
+		return mockMvc.perform(request)
+			.andExpect(status().isOk())
+			.andReturn()
+			.getResponse()
+			.getContentAsString();
+	}
+
+	private static List<String> ids(String page) {
+		return JsonPath.read(page, "$.items[*].id");
 	}
 
 	private void unread(String userId, String id, String kind, String actorId, boolean read) {

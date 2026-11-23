@@ -71,7 +71,7 @@ class NotificationContractController {
 	@GetMapping
 	PageResponse<NotificationView> notifications(@RequestHeader(value = "X-Session-Token", required = false) String sessionToken,
 			@RequestParam(required = false) String cursor, @RequestParam(defaultValue = "20") int limit,
-			@RequestParam(required = false) String context) {
+			@RequestParam(required = false) String context, @RequestParam(defaultValue = "false") boolean unread) {
 		CurrentUser user = currentUserResolver.resolve(sessionToken);
 		// Teto de página: sem ele, `limit` vinha do cliente sem limite nenhum e uma aba aberta
 		// pedia a lista inteira de uma vez. A lista carrega aos poucos, como o feed e as mensagens.
@@ -81,7 +81,8 @@ class NotificationContractController {
 		Set<String> hidden = blockedUsersReader.hiddenIdsFor(user.id().value());
 		// O cursor sai da pagina LIDA, antes do filtro de bloqueio: senao a pagina que perde itens
 		// para o filtro parecia a ultima e as notificacoes seguintes ficavam inalcancaveis.
-		List<Notification> page = notificationService.list(user.id().value(), before, parseContext(context), limit);
+		List<Notification> page = notificationService.list(user.id().value(), before, parseContext(context), unread,
+			limit);
 		List<Notification> notifications = page.stream()
 			.filter(n -> n.actorId() == null || !hidden.contains(n.actorId()))
 			.toList();
